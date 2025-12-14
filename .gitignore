@@ -1,0 +1,6 @@
+result
+.trash
+
+main
+/.zig-cache/
+/zig-out/
