@@ -15,9 +15,9 @@ const BatchResponse = struct {
 };
 
 const IO_BUFSIZE = 4 * 1024;
-const ALLOC_BUFSIZE = 15 * 1024 * 1024;
+const ALLOC_BUFSIZE = 1024 * 1024; // mostly to load and parse ca bundles
 const REQBODY_BUFSIZE = 256;
-const RESBODY_BUFSIZE = 4 * REQBODY_BUFSIZE;
+const RESBODY_BUFSIZE = 2 * REQBODY_BUFSIZE; // a single blob response is <350 bytes
 
 const OID = "7a74de3317b04a679ae706064a4c72b217e8fff1047516d0202bb60aff512de8";
 pub fn main() !void {
@@ -48,7 +48,6 @@ pub fn main() !void {
         .payload = body.buffered(),
         .response_writer = &response,
     });
-    try body.flush();
     const response_json = try std.json.parseFromSlice(
         BatchResponse,
         allocator,
@@ -66,15 +65,11 @@ pub fn main() !void {
     var outfile = try std.fs.cwd().createFile(OID, .{ .truncate = true });
     var out = outfile.writer(&out_buf);
 
-    var blob = std.Io.Writer.Allocating.init(allocator);
     _ = try client.fetch(.{
         .method = std.http.Method.GET,
         .location = .{ .uri = try .parse(response_json.value.objects[0].actions.download.href) },
-        .response_writer = &blob.writer,
+        .response_writer = &out.interface,
     });
-
-    try out.interface.writeAll(blob.writer.buffered());
     try out.interface.flush();
     std.debug.print("wrote ./{s}\n", .{OID});
-    try blob.writer.flush();
 }
