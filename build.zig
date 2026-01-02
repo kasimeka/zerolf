@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     // to our consumers. We must give it a name because a Zig package can expose
     // multiple modules and consumers will need to be able to specify which
     // module they want to access.
-    const mod = b.addModule("lfs", .{
+    const mod_lfs = b.addModule("lfs", .{
         // The root source file is the "entry point" of this module. Users of
         // this module will only be able to access public declarations contained
         // in this file, which means that if you have declarations that you
@@ -39,6 +39,12 @@ pub fn build(b: *std.Build) void {
         // Later on we'll use this module as the root module of a test executable
         // which requires us to specify a target.
         .target = target,
+        .imports = &.{
+            .{ .name = "TempDir", .module = b.addModule("TempDir", .{
+                .root_source_file = b.path("src/TempDir.zig"),
+                .target = target,
+            }) },
+        },
     });
 
     // Here we define an executable. An executable needs to have a root module
@@ -78,7 +84,7 @@ pub fn build(b: *std.Build) void {
                 // repeated because you are allowed to rename your imports, which
                 // can be extremely useful in case of collisions (which can happen
                 // importing modules from different packages).
-                .{ .name = "lfs", .module = mod },
+                .{ .name = "lfs", .module = mod_lfs },
             },
         }),
     });
@@ -118,9 +124,7 @@ pub fn build(b: *std.Build) void {
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.
-    const mod_tests = b.addTest(.{
-        .root_module = mod,
-    });
+    const mod_tests = b.addTest(.{ .root_module = mod_lfs });
 
     // A run step that will run the test executable.
     const run_mod_tests = b.addRunArtifact(mod_tests);

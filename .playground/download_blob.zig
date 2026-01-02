@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 
 const Pointer = struct {
     version: []const u8 = "https://git-lfs.github.com/spec/v1",
@@ -21,7 +22,7 @@ const RESBODY_BUFSIZE = 2 * REQBODY_BUFSIZE; // a single blob response is <350 b
 
 const OID = "7a74de3317b04a679ae706064a4c72b217e8fff1047516d0202bb60aff512de8";
 pub fn main() !void {
-    var threaded = std.Io.Threaded.init_single_threaded;
+    var threaded = Io.Threaded.init_single_threaded;
     const io = threaded.io();
 
     var alloc_buf: [ALLOC_BUFSIZE]u8 = undefined;
@@ -32,10 +33,10 @@ pub fn main() !void {
     defer client.deinit();
 
     var request_buf: [RESBODY_BUFSIZE]u8 = undefined;
-    var response = std.Io.Writer.fixed(&request_buf);
+    var response = Io.Writer.fixed(&request_buf);
 
     var body_buf: [REQBODY_BUFSIZE]u8 = undefined;
-    var body = std.Io.Writer.fixed(&body_buf);
+    var body = Io.Writer.fixed(&body_buf);
     var body_json = std.json.Stringify{ .writer = &body };
     try body_json.write(BatchRequest{ .objects = &[_]Pointer{.{ .oid = OID }} });
 
@@ -62,8 +63,8 @@ pub fn main() !void {
     });
 
     var out_buf: [IO_BUFSIZE]u8 = undefined;
-    var outfile = try std.fs.cwd().createFile(OID, .{ .truncate = true });
-    var out = outfile.writer(&out_buf);
+    var outfile = try Io.Dir.cwd().createFile(io, OID, .{ .truncate = true });
+    var out = outfile.writer(io, &out_buf);
 
     _ = try client.fetch(.{
         .method = std.http.Method.GET,

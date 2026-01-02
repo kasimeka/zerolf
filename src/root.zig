@@ -1,7 +1,7 @@
 const std = @import("std");
+const TempDir = @import("TempDir");
 const Io = std.Io;
 const Sha256 = std.crypto.hash.sha2.Sha256;
-const testing = std.testing;
 
 const IO_BUFSIZE = 4 * 1024;
 
@@ -9,20 +9,20 @@ const LFS_DIR = ".git/lfs/objects";
 const POINTER_PREFIX = "version https://git-lfs.github.com/spec/v1\noid sha256:";
 const POINTER_FMT = POINTER_PREFIX ++ "{s}\nsize {d}\n";
 
-const POINTER_BUFSIZE = POINTER_FMT.len + BLOB_HASH_LEN + 1024;
+const POINTER_BUFSIZE = POINTER_FMT.len + BLOB_HASH_LEN; // it's actually 1024 in spec, we're much lower
 
 const OUT_DIR_LEN = (LFS_DIR ++ "/xx/yy/").len;
 const BLOB_HASH_LEN = Sha256.digest_length * 2; // hex representation doubles the size
 const BLOB_PATH_LEN = OUT_DIR_LEN + BLOB_HASH_LEN;
 
 const Size = u128;
-pub fn clean(input: *Io.Reader, pointer: *Io.Writer) ![BLOB_PATH_LEN]u8 {
-    var tmpdir = testing.tmpDir(.{});
-    defer tmpdir.cleanup();
+pub fn clean(io: Io, input: *Io.Reader, pointer: *Io.Writer) ![BLOB_PATH_LEN]u8 {
+    var tempdir = TempDir.init(io, .{});
+    defer tempdir.cleanup(io);
 
     const tmpfile_name = "lfs-blob";
     var tmpfile_buf: [POINTER_BUFSIZE]u8 = undefined;
-    var tmpfile = (try tmpdir.dir.createFile(tmpfile_name, .{})).writer(&tmpfile_buf);
+    var tmpfile = (try tempdir.dir.createFile(io, tmpfile_name, .{})).writer(io, &tmpfile_buf);
 
     const oid, const size = pointer_fields: {
         var hasher = Sha256.init(.{});
@@ -52,13 +52,13 @@ pub fn clean(input: *Io.Reader, pointer: *Io.Writer) ![BLOB_PATH_LEN]u8 {
 
     const blob_path = fmtBlobPath(oid);
 
-    const cwd = std.fs.cwd();
-    try cwd.makePath(blob_path[0..OUT_DIR_LEN]);
+    const cwd = Io.Dir.cwd();
+    try cwd.createDirPath(io, blob_path[0..OUT_DIR_LEN]);
 
-    const blob = cwd.openFile(&blob_path, .{});
+    const blob = cwd.openFile(io, &blob_path, .{});
     if (blob == error.FileNotFound) {
-        try std.fs.rename(tmpdir.dir, tmpfile_name, cwd, &blob_path);
-    } else (try blob).close();
+        try Io.Dir.rename(tempdir.dir, tmpfile_name, cwd, &blob_path, io);
+    } else (try blob).close(io);
 
     return blob_path;
 }
@@ -72,7 +72,7 @@ pub fn smudge(io: Io, pointer: *Io.Reader, output: *Io.Writer) !void {
     };
 
     var out_buf: [IO_BUFSIZE]u8 = undefined;
-    const b = try std.fs.cwd().openFile(&fmtBlobPath(oid), .{});
+    const b = try Io.Dir.cwd().openFile(io, &fmtBlobPath(oid), .{});
     var blob = b.reader(io, &out_buf);
     const bytes_written = try blob.interface.streamRemaining(output);
     try output.flush();
@@ -110,6 +110,8 @@ fn fmtBlobPath(oid: [BLOB_HASH_LEN]u8) [BLOB_PATH_LEN]u8 {
 }
 
 test "end to end" {
+    const testing = std.testing;
+
     const BLOB =
         \\hysm and mazen
         \\
@@ -124,27 +126,25 @@ test "end to end" {
 
     var tmpdir = testing.tmpDir(.{});
     defer tmpdir.cleanup();
-    try tmpdir.dir.setAsCwd();
+    try std.process.setCurrentDir(testing.io, tmpdir.dir);
 
     var pointer_buf: [POINTER.len]u8 = undefined;
     var pointer = Io.Writer.fixed(&pointer_buf);
     var blob = Io.Reader.fixed(BLOB);
 
-    const path = try clean(&blob, &pointer);
+    const path = try clean(testing.io, &blob, &pointer);
     try pointer.flush();
 
     try testing.expectEqualStrings(PATH, &path);
     try testing.expectEqualStrings(POINTER, &pointer_buf);
-    var f = try tmpdir.dir.openFile(PATH, .{});
-    f.close();
+    var f = try tmpdir.dir.openFile(testing.io, PATH, .{});
+    f.close(testing.io);
 
     var pointer_2 = Io.Reader.fixed(&pointer_buf);
     var blob_buf: [BLOB.len + 1]u8 = undefined;
     var blob_2 = Io.Writer.fixed(&blob_buf);
 
-    var threaded = Io.Threaded.init_single_threaded;
-    const io = threaded.io();
-    try smudge(io, &pointer_2, &blob_2);
+    try smudge(testing.io, &pointer_2, &blob_2);
     try blob_2.flush();
 
     try testing.expectEqualStrings(BLOB, blob_buf[0..BLOB.len]);
