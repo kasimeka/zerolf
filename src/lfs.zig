@@ -2,7 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
-const CacheDir = @import("./CacheDir.zig");
+const CacheDir = @import("lfs/CacheDir.zig");
 
 const IO_BUFSIZE = 4 * 1024;
 
@@ -142,7 +142,7 @@ test "end to end" {
     f.close(testing.io);
 
     var pointer_2 = Io.Reader.fixed(&pointer_buf);
-    var blob_buf: [BLOB.len + 1]u8 = undefined;
+    var blob_buf: [BLOB.len + 1]u8 = undefined; // FIXME?
     var blob_2 = Io.Writer.fixed(&blob_buf);
 
     try smudge(testing.io, &pointer_2, &blob_2);
