@@ -39,12 +39,6 @@ pub fn build(b: *std.Build) void {
         // Later on we'll use this module as the root module of a test executable
         // which requires us to specify a target.
         .target = target,
-        .imports = &.{
-            .{ .name = "TempDir", .module = b.addModule("TempDir", .{
-                .root_source_file = b.path("src/TempDir.zig"),
-                .target = target,
-            }) },
-        },
     });
 
     // Here we define an executable. An executable needs to have a root module
@@ -128,6 +122,7 @@ pub fn build(b: *std.Build) void {
 
     // A run step that will run the test executable.
     const run_mod_tests = b.addRunArtifact(mod_tests);
+    run_mod_tests.setEnvironmentVariable("ZEROLF_IS_HOOK", "1");
 
     // Creates an executable that will run `test` blocks from the executable's
     // root module. Note that test executables only test one module at a time,

@@ -1,7 +1,8 @@
 const std = @import("std");
-const TempDir = @import("TempDir");
 const Io = std.Io;
 const Sha256 = std.crypto.hash.sha2.Sha256;
+
+const CacheDir = @import("./CacheDir.zig");
 
 const IO_BUFSIZE = 4 * 1024;
 
@@ -17,12 +18,12 @@ const BLOB_PATH_LEN = OUT_DIR_LEN + BLOB_HASH_LEN;
 
 const Size = u128;
 pub fn clean(io: Io, input: *Io.Reader, pointer: *Io.Writer) ![BLOB_PATH_LEN]u8 {
-    var tempdir = TempDir.init(io, .{});
-    defer tempdir.cleanup(io);
+    var cache = try CacheDir.init(io, .{});
+    defer cache.cleanup(io) catch {}; // FIXME!
 
     const tmpfile_name = "lfs-blob";
     var tmpfile_buf: [POINTER_BUFSIZE]u8 = undefined;
-    var tmpfile = (try tempdir.dir.createFile(io, tmpfile_name, .{})).writer(io, &tmpfile_buf);
+    var tmpfile = (try cache.dir.createFile(io, tmpfile_name, .{})).writer(io, &tmpfile_buf);
 
     const oid, const size = pointer_fields: {
         var hasher = Sha256.init(.{});
@@ -57,7 +58,7 @@ pub fn clean(io: Io, input: *Io.Reader, pointer: *Io.Writer) ![BLOB_PATH_LEN]u8 
 
     const blob = cwd.openFile(io, &blob_path, .{});
     if (blob == error.FileNotFound) {
-        try Io.Dir.rename(tempdir.dir, tmpfile_name, cwd, &blob_path, io);
+        try Io.Dir.rename(cache.dir, tmpfile_name, cwd, &blob_path, io);
     } else (try blob).close(io);
 
     return blob_path;
@@ -112,6 +113,10 @@ fn fmtBlobPath(oid: [BLOB_HASH_LEN]u8) [BLOB_PATH_LEN]u8 {
 test "end to end" {
     const testing = std.testing;
 
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    try std.process.setCurrentDir(testing.io, tmpdir.dir);
+
     const BLOB =
         \\hysm and mazen
         \\
@@ -123,10 +128,6 @@ test "end to end" {
         \\
     ;
     const PATH = ".git/lfs/objects/c6/98/c698018e93b875c0f69916888842b0c79365bad3e6036b90261566018803c293";
-
-    var tmpdir = testing.tmpDir(.{});
-    defer tmpdir.cleanup();
-    try std.process.setCurrentDir(testing.io, tmpdir.dir);
 
     var pointer_buf: [POINTER.len]u8 = undefined;
     var pointer = Io.Writer.fixed(&pointer_buf);
