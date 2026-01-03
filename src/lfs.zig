@@ -7,6 +7,7 @@ const api = @import("lfs/api.zig");
 const CacheDir = @import("lfs/CacheDir.zig");
 
 const IO_BUFSIZE = 4 * 1024;
+const HTTP_BUFSIZE = 1024 * 1024; // mostly to load and parse ca bundles
 
 pub fn clean(io: Io, input: *Io.Reader, pointer: *Io.Writer) ![blob.OUT_PATH_LEN]u8 {
     var cache = try CacheDir.init(io, .{});
@@ -59,8 +60,6 @@ pub fn clean(io: Io, input: *Io.Reader, pointer: *Io.Writer) ![blob.OUT_PATH_LEN
     return blob_path;
 }
 
-const ALLOC_BUFSIZE = 1024 * 1024; // mostly to load and parse ca bundles
-
 pub fn smudge(io: Io, pointer: *Io.Reader, output: *Io.Writer) !void {
     defer output.flush() catch {};
 
@@ -69,25 +68,42 @@ pub fn smudge(io: Io, pointer: *Io.Reader, output: *Io.Writer) !void {
         return;
     };
 
-    var alloc_buf: [ALLOC_BUFSIZE]u8 = undefined;
+    var alloc_buf: [HTTP_BUFSIZE]u8 = undefined;
     var gpa = std.heap.FixedBufferAllocator.init(&alloc_buf);
 
+    var client = std.http.Client{ .allocator = gpa.allocator(), .io = io };
+    defer client.deinit();
+
     var out_buf: [IO_BUFSIZE]u8 = undefined;
-    const b = Io.Dir.cwd().openFile(io, &blob.fmtOutPath(oid), .{}) catch |e| switch (e) {
-        error.FileNotFound => try api.fetchBlob(io, gpa.allocator(), oid, size),
+    const cwd = Io.Dir.cwd();
+    const blobFile = cwd.openFile(io, &blob.fmtOutPath(oid), .{}) catch |e| switch (e) {
+        error.FileNotFound => try api.download(&client, cwd, oid, size),
         else => return e,
     };
-    var blobFile = b.reader(io, &out_buf);
-    const bytes_written = try blobFile.interface.streamRemaining(output);
+    defer blobFile.close(io);
+    var blobReader = blobFile.reader(io, &out_buf);
+
+    // manual copy loop - sendfile doesn't work with stdout on macos
+    var bytes_written: blob.Size = 0;
+    while (bytes_written < size) {
+        const to_read: usize = @min(IO_BUFSIZE, size - bytes_written);
+        const chunk = blobReader.interface.take(to_read) catch |e| switch (e) {
+            error.EndOfStream => break,
+            else => return e,
+        };
+        try output.writeAll(chunk);
+        bytes_written += chunk.len;
+    }
     try output.flush();
-    if (bytes_written != size) return error.BlobSizeMismatch;
 }
 
 test "end to end" {
     const testing = std.testing;
 
+    const orig_cwd = Io.Dir.cwd();
     var tmpdir = testing.tmpDir(.{});
     defer tmpdir.cleanup();
+    defer std.process.setCurrentDir(testing.io, orig_cwd) catch {};
     try std.process.setCurrentDir(testing.io, tmpdir.dir);
 
     const BLOB =
