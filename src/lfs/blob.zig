@@ -14,7 +14,7 @@ pub const POINTER_FMT = POINTER_PREFIX ++ "{s}\nsize {d}\n";
 
 pub const POINTER_BUFSIZE = POINTER_FMT.len + HASH_LEN; // it's actually 1024 in spec, we're much lower
 
-const HASH_LEN = Sha256.digest_length * 2; // hex representation doubles the size
+pub const HASH_LEN = Sha256.digest_length * 2; // hex representation doubles the size
 pub const OUT_DIR_LEN = (LFS_DIR ++ "/xx/yy/").len;
 pub const OUT_PATH_LEN = OUT_DIR_LEN + HASH_LEN;
 

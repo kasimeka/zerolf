@@ -3,6 +3,7 @@ const Io = std.Io;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 const blob = @import("lfs/blob.zig");
+const api = @import("lfs/api.zig");
 const CacheDir = @import("lfs/CacheDir.zig");
 
 const IO_BUFSIZE = 4 * 1024;
@@ -58,6 +59,8 @@ pub fn clean(io: Io, input: *Io.Reader, pointer: *Io.Writer) ![blob.OUT_PATH_LEN
     return blob_path;
 }
 
+const ALLOC_BUFSIZE = 1024 * 1024; // mostly to load and parse ca bundles
+
 pub fn smudge(io: Io, pointer: *Io.Reader, output: *Io.Writer) !void {
     defer output.flush() catch {};
 
@@ -66,19 +69,18 @@ pub fn smudge(io: Io, pointer: *Io.Reader, output: *Io.Writer) !void {
         return;
     };
 
+    var alloc_buf: [ALLOC_BUFSIZE]u8 = undefined;
+    var gpa = std.heap.FixedBufferAllocator.init(&alloc_buf);
+
     var out_buf: [IO_BUFSIZE]u8 = undefined;
     const b = Io.Dir.cwd().openFile(io, &blob.fmtOutPath(oid), .{}) catch |e| switch (e) {
-        error.FileNotFound => try fetchBlob(&oid),
+        error.FileNotFound => try api.fetchBlob(io, gpa.allocator(), oid, size),
         else => return e,
     };
     var blobFile = b.reader(io, &out_buf);
     const bytes_written = try blobFile.interface.streamRemaining(output);
     try output.flush();
     if (bytes_written != size) return error.BlobSizeMismatch;
-}
-fn fetchBlob(oid: []const u8) !Io.File {
-    _ = oid;
-    return error.NotImplemented;
 }
 
 test "end to end" {
