@@ -215,6 +215,6 @@ test "upload to github" {
     defer client.deinit();
 
     var auth_buf: [REQBODY_BUFSIZE]u8 = undefined;
-    const auth = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{std.posix.getenv("GITHUB_TOKEN") orelse return error.MissingGithubToken}) catch unreachable;
+    const auth = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{std.posix.getenv("GITHUB_TOKEN") orelse return error.MissingGithubToken}) catch unreachable; // FIXME: nonposix
     try upload(&client, OID, SIZE, auth);
 }
