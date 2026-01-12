@@ -4,6 +4,8 @@ const Io = std.Io;
 const lfs = @import("lfs");
 
 const IO_BUFSIZE = 4 * 1024;
+const AUTH_BUFSIZE = 256;
+
 pub fn main() !void {
     var threaded = Io.Threaded.init_single_threaded;
     const io = threaded.io();
@@ -20,5 +22,15 @@ pub fn main() !void {
     if (std.mem.eql(u8, mode, "clean"))
         _ = try lfs.clean(io, &stdin.interface, &stdout.interface)
     else if (std.mem.eql(u8, mode, "smudge"))
-        _ = try lfs.smudge(io, &stdin.interface, &stdout.interface);
+        _ = try lfs.smudge(io, &stdin.interface, &stdout.interface)
+    else if (std.mem.eql(u8, mode, "pre-push"))
+        try lfs.prepush(io, &stdin.interface, getAuth());
+}
+
+fn getAuth() ?[]const u8 {
+    const S = struct {
+        var auth_buf: [AUTH_BUFSIZE]u8 = undefined;
+    };
+    const token = std.posix.getenv("GITHUB_TOKEN") orelse return null;
+    return std.fmt.bufPrint(&S.auth_buf, "Bearer {s}", .{token}) catch null;
 }
