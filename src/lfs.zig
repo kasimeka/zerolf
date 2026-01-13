@@ -8,6 +8,10 @@ const CacheDir = @import("lfs/CacheDir.zig");
 
 const IO_BUFSIZE = 4 * 1024;
 const HTTP_BUFSIZE = 1024 * 1024; // mostly to load and parse ca bundles
+const MAX_GIT_REV_LIST_ARGS = 4; // git rev-list --objects <sha-or-range>
+const GIT_SHA_RANGE_BUFSIZE = 40 + 2 + 40; // <sha>..<sha>
+const GIT_SHA_HEX_LEN = 40;
+const GIT_REV_LIST_LINE_BUFSIZE = 256; // <sha> <path>
 
 pub fn clean(io: Io, input: *Io.Reader, pointer: *Io.Writer) ![blob.OUT_PATH_LEN]u8 {
     var cache = try CacheDir.init(io, .{});
@@ -116,13 +120,13 @@ pub fn prepush(io: Io, input: *Io.Reader, auth: ?[]const u8) !void {
         const remote_sha = it.next() orelse continue;
 
         // Find LFS pointers in commits being pushed
-        try uploadLfsObjects(io, &fba, local_sha, remote_sha, auth);
+        try uploadLfsObjects(io, fba.allocator(), local_sha, remote_sha, auth);
     }
 }
 
 fn uploadLfsObjects(
     io: Io,
-    fba: *std.heap.FixedBufferAllocator,
+    allocator: std.mem.Allocator,
     local_sha: []const u8,
     remote_sha: []const u8,
     auth: ?[]const u8,
@@ -131,7 +135,7 @@ fn uploadLfsObjects(
     // Otherwise, list objects in the range remote_sha..local_sha
     const is_new_branch = std.mem.allEqual(u8, remote_sha, '0');
 
-    var rev_list_args: [8][]const u8 = undefined;
+    var rev_list_args: [MAX_GIT_REV_LIST_ARGS][]const u8 = undefined;
     var arg_count: usize = 0;
 
     rev_list_args[arg_count] = "git";
@@ -145,13 +149,13 @@ fn uploadLfsObjects(
         rev_list_args[arg_count] = local_sha;
         arg_count += 1;
     } else {
-        var range_buf: [128]u8 = undefined;
+        var range_buf: [GIT_SHA_RANGE_BUFSIZE]u8 = undefined;
         const range = std.fmt.bufPrint(&range_buf, "{s}..{s}", .{ remote_sha, local_sha }) catch return;
         rev_list_args[arg_count] = range;
         arg_count += 1;
     }
 
-    var child = std.process.Child.init(rev_list_args[0..arg_count], fba.allocator());
+    var child = std.process.Child.init(rev_list_args[0..arg_count], allocator);
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore;
     try child.spawn(io);
@@ -160,7 +164,7 @@ fn uploadLfsObjects(
     var reader = child.stdout.?.reader(io, &stdout_buf);
 
     // Process each line from git rev-list output
-    var line_buf: [256]u8 = undefined;
+    var line_buf: [GIT_REV_LIST_LINE_BUFSIZE]u8 = undefined;
     var line_len: usize = 0;
 
     while (true) {
@@ -184,10 +188,10 @@ fn uploadLfsObjects(
             if (path.len == 0) continue; // Skip tree objects (empty path)
 
             // Copy obj_sha to stable memory before reset
-            var sha_buf: [64]u8 = undefined;
+            var sha_buf: [GIT_SHA_HEX_LEN]u8 = undefined;
             @memcpy(sha_buf[0..obj_sha.len], obj_sha);
 
-            try checkAndUploadBlob(io, fba, sha_buf[0..obj_sha.len], auth);
+            try checkAndUploadBlob(io, allocator, sha_buf[0..obj_sha.len], auth);
         } else {
             if (line_len < line_buf.len) {
                 line_buf[line_len] = byte;
@@ -201,14 +205,11 @@ fn uploadLfsObjects(
 
 fn checkAndUploadBlob(
     io: Io,
-    fba: *std.heap.FixedBufferAllocator,
+    allocator: std.mem.Allocator,
     obj_sha: []const u8,
     auth: ?[]const u8,
 ) !void {
-    // Reset allocator for each blob to ensure enough memory
-    fba.reset();
-
-    var child = std.process.Child.init(&.{ "git", "cat-file", "blob", obj_sha }, fba.allocator());
+    var child = std.process.Child.init(&.{ "git", "cat-file", "blob", obj_sha }, allocator);
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore;
     try child.spawn(io);
@@ -232,7 +233,7 @@ fn checkAndUploadBlob(
         };
         file.close(io);
 
-        var client = std.http.Client{ .allocator = fba.allocator(), .io = io };
+        var client = std.http.Client{ .allocator = allocator, .io = io };
         defer client.deinit();
 
         try api.upload(&client, &oid, size, auth);
