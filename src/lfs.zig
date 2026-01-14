@@ -8,10 +8,11 @@ const CacheDir = @import("lfs/CacheDir.zig");
 
 const IO_BUFSIZE = 4 * 1024;
 const HTTP_BUFSIZE = 1024 * 1024; // mostly to load and parse ca bundles
-const MAX_GIT_REV_LIST_ARGS = 4; // git rev-list --objects <sha-or-range>
-const GIT_SHA_RANGE_BUFSIZE = 40 + 2 + 40; // <sha>..<sha>
-const GIT_SHA_HEX_LEN = 40;
-const GIT_REV_LIST_LINE_BUFSIZE = 256; // <sha> <path>
+const GIT_SHA_HEX_LEN = std.crypto.hash.Sha1.digest_length * 2; // hex representation doubles the size // TODO: support git repos with sha256
+const GIT_SHA_RANGE_BUFSIZE = 2 + GIT_SHA_HEX_LEN * 2; // <sha>..<sha>
+
+const MAX_GIT_REV_LIST_ARGS = 4; // git rev-list --objects <sha-or-range> // TODO: make it configurable
+const GIT_REV_LIST_LINE_BUFSIZE = 256; // <sha> <path> // TODO?: dynamically allocate it
 
 pub fn clean(io: Io, input: *Io.Reader, pointer: *Io.Writer) ![blob.OUT_PATH_LEN]u8 {
     var cache = try CacheDir.init(io, .{});
