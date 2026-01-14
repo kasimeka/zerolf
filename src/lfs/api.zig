@@ -134,6 +134,17 @@ fn putObject(
     var buf: [IO_BUFSIZE]u8 = undefined;
     var r = file.reader(io, &buf);
 
+    var extra_headers_buf: [2]std.http.Header = undefined;
+    var extra_header_count: usize = 0;
+    if (action.header.@"x-amz-content-sha256") |v| {
+        extra_headers_buf[extra_header_count] = .{ .name = "x-amz-content-sha256", .value = v };
+        extra_header_count += 1;
+    }
+    if (action.header.@"x-amz-date") |v| {
+        extra_headers_buf[extra_header_count] = .{ .name = "x-amz-date", .value = v };
+        extra_header_count += 1;
+    }
+
     const result = try client.fetch(.{
         .method = .PUT,
         .location = .{ .uri = try .parse(action.href) },
@@ -141,10 +152,7 @@ fn putObject(
             .content_type = .{ .override = "application/octet-stream" },
             .authorization = .{ .override = action.header.Authorization },
         },
-        .extra_headers = &.{
-            .{ .name = "x-amz-content-sha256", .value = action.header.@"x-amz-content-sha256" },
-            .{ .name = "x-amz-date", .value = action.header.@"x-amz-date" },
-        },
+        .extra_headers = extra_headers_buf[0..extra_header_count],
         .payload = try r.interface.take(@intCast(size)),
     });
     if (result.status != .ok) return error.UploadFailed;

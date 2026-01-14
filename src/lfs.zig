@@ -8,6 +8,11 @@ const CacheDir = @import("lfs/CacheDir.zig");
 
 const IO_BUFSIZE = 4 * 1024;
 const HTTP_BUFSIZE = 1024 * 1024; // mostly to load and parse ca bundles
+const GIT_SHA_HEX_LEN = std.crypto.hash.Sha1.digest_length * 2; // hex representation doubles the size // TODO: support git repos with sha256
+const GIT_SHA_RANGE_BUFSIZE = 2 + GIT_SHA_HEX_LEN * 2; // <sha>..<sha>
+
+const MAX_GIT_REV_LIST_ARGS = 4; // git rev-list --objects <sha-or-range> // TODO: make it configurable
+const GIT_REV_LIST_LINE_BUFSIZE = 256; // <sha> <path> // TODO?: dynamically allocate it
 
 pub fn clean(io: Io, input: *Io.Reader, pointer: *Io.Writer) ![blob.OUT_PATH_LEN]u8 {
     var cache = try CacheDir.init(io, .{});
@@ -95,6 +100,147 @@ pub fn smudge(io: Io, pointer: *Io.Reader, output: *Io.Writer) !void {
         bytes_written += chunk.len;
     }
     try output.flush();
+}
+
+pub fn prepush(io: Io, input: *Io.Reader, auth: ?[]const u8) !void {
+    var alloc_buf: [2 * HTTP_BUFSIZE]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&alloc_buf);
+
+    // Read refs from stdin: <local-ref> <local-sha> <remote-ref> <remote-sha>
+    while (true) {
+        const line = input.takeDelimiterExclusive('\n') catch |e| switch (e) {
+            error.EndOfStream => break,
+            else => return e,
+        };
+        if (line.len == 0) break;
+
+        var it = std.mem.splitScalar(u8, line, ' ');
+        _ = it.next(); // local ref
+        const local_sha = it.next() orelse continue;
+        _ = it.next(); // remote ref
+        const remote_sha = it.next() orelse continue;
+
+        // Find LFS pointers in commits being pushed
+        try uploadLfsObjects(io, fba.allocator(), local_sha, remote_sha, auth);
+    }
+}
+
+fn uploadLfsObjects(
+    io: Io,
+    allocator: std.mem.Allocator,
+    local_sha: []const u8,
+    remote_sha: []const u8,
+    auth: ?[]const u8,
+) !void {
+    // For new branches (remote_sha is all zeros), list all objects
+    // Otherwise, list objects in the range remote_sha..local_sha
+    const is_new_branch = std.mem.allEqual(u8, remote_sha, '0');
+
+    var rev_list_args: [MAX_GIT_REV_LIST_ARGS][]const u8 = undefined;
+    var arg_count: usize = 0;
+
+    rev_list_args[arg_count] = "git";
+    arg_count += 1;
+    rev_list_args[arg_count] = "rev-list";
+    arg_count += 1;
+    rev_list_args[arg_count] = "--objects";
+    arg_count += 1;
+
+    if (is_new_branch) {
+        rev_list_args[arg_count] = local_sha;
+        arg_count += 1;
+    } else {
+        var range_buf: [GIT_SHA_RANGE_BUFSIZE]u8 = undefined;
+        const range = std.fmt.bufPrint(&range_buf, "{s}..{s}", .{ remote_sha, local_sha }) catch return;
+        rev_list_args[arg_count] = range;
+        arg_count += 1;
+    }
+
+    var child = std.process.Child.init(rev_list_args[0..arg_count], allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore;
+    try child.spawn(io);
+
+    var stdout_buf: [IO_BUFSIZE]u8 = undefined;
+    var reader = child.stdout.?.reader(io, &stdout_buf);
+
+    // Process each line from git rev-list output
+    var line_buf: [GIT_REV_LIST_LINE_BUFSIZE]u8 = undefined;
+    var line_len: usize = 0;
+
+    while (true) {
+        const byte = reader.interface.takeByte() catch |e| switch (e) {
+            error.EndOfStream => break,
+            else => return e,
+        };
+
+        if (byte == '\n') {
+            const obj_line = line_buf[0..line_len];
+            line_len = 0;
+
+            if (obj_line.len == 0) continue;
+
+            // Lines with paths: "<sha> <path>" (blobs)
+            // Lines without paths: "<sha>" (commits/trees) - skip these
+            var obj_it = std.mem.splitScalar(u8, obj_line, ' ');
+            const obj_sha = obj_it.next() orelse continue;
+            const path = obj_it.next() orelse continue;
+
+            if (path.len == 0) continue; // Skip tree objects (empty path)
+
+            // Copy obj_sha to stable memory before reset
+            var sha_buf: [GIT_SHA_HEX_LEN]u8 = undefined;
+            @memcpy(sha_buf[0..obj_sha.len], obj_sha);
+
+            try checkAndUploadBlob(io, allocator, sha_buf[0..obj_sha.len], auth);
+        } else {
+            if (line_len < line_buf.len) {
+                line_buf[line_len] = byte;
+                line_len += 1;
+            }
+        }
+    }
+
+    _ = try child.wait(io);
+}
+
+fn checkAndUploadBlob(
+    io: Io,
+    allocator: std.mem.Allocator,
+    obj_sha: []const u8,
+    auth: ?[]const u8,
+) !void {
+    var child = std.process.Child.init(&.{ "git", "cat-file", "blob", obj_sha }, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Ignore;
+    try child.spawn(io);
+
+    var stdout_buf: [blob.POINTER_BUFSIZE]u8 = undefined;
+    var stdout = child.stdout.?.reader(io, &stdout_buf);
+
+    // Try to parse as LFS pointer
+    if (blob.parsePointer(&stdout.interface)) |parsed| {
+        const oid, const size = parsed;
+
+        // Check if object exists locally before uploading
+        const blob_path = blob.fmtOutPath(oid);
+        const cwd = Io.Dir.cwd();
+        const file = cwd.openFile(io, &blob_path, .{}) catch |e| switch (e) {
+            error.FileNotFound => {
+                _ = try child.wait(io);
+                return;
+            },
+            else => return e,
+        };
+        file.close(io);
+
+        var client = std.http.Client{ .allocator = allocator, .io = io };
+        defer client.deinit();
+
+        try api.upload(&client, &oid, size, auth);
+    }
+
+    _ = try child.wait(io);
 }
 
 test "end to end" {
