@@ -12,7 +12,7 @@ const GIT_SHA_HEX_LEN = std.crypto.hash.Sha1.digest_length * 2; // hex represent
 const GIT_SHA_RANGE_BUFSIZE = 2 + GIT_SHA_HEX_LEN * 2; // <sha>..<sha>
 
 const MAX_GIT_REV_LIST_ARGS = 4; // git rev-list --objects <sha-or-range> // TODO: make it configurable
-const GIT_REV_LIST_LINE_BUFSIZE = 256; // <sha> <path> // TODO?: dynamically allocate it
+const GIT_REV_LIST_LINE_BUFSIZE = 4096 + GIT_SHA_HEX_LEN + 1; // LINUX_PATH_MAX + sha + space // TODO?: dynamically allocate it
 
 pub fn clean(io: Io, input: *Io.Reader, pointer: *Io.Writer) ![blob.OUT_PATH_LEN]u8 {
     var cache = try CacheDir.init(io, .{});
@@ -194,10 +194,11 @@ fn uploadLfsObjects(
 
             try checkAndUploadBlob(io, allocator, sha_buf[0..obj_sha.len], auth);
         } else {
-            if (line_len < line_buf.len) {
-                line_buf[line_len] = byte;
-                line_len += 1;
+            if (line_len >= line_buf.len) {
+                return error.PathTooLong;
             }
+            line_buf[line_len] = byte;
+            line_len += 1;
         }
     }
 
